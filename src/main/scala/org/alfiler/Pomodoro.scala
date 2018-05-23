@@ -7,7 +7,7 @@ import akka.persistence.{PersistentActor, RecoveryCompleted}
 import scala.concurrent.duration.Duration
 import java.time.{Duration => JavaDuration}
 
-import akka.actor.Cancellable
+import akka.actor.{Cancellable, Props}
 
 trait PomodoroCmd
 
@@ -37,14 +37,25 @@ case class InPomodoro(duration: Duration, endAt: Instant) extends State
 
 case object Stopped extends State
 
+object Pomodoro {
+  def props(id:String):Props = Props(new Pomodoro(id))
+}
+
 class Pomodoro(val persistenceId: String) extends PersistentActor {
   import cats.syntax.option._
 
   import scala.concurrent.duration._
+  import scala.concurrent.ExecutionContext.Implicits.global
 
   var duration: Duration = 25.minutes
   var state: State = Stopped
   var launcher:Option[Cancellable] = None
+
+  private def instantToEnd(duration: Duration):Instant = {
+    val now = Instant.now()
+    val durationinJava = JavaDuration.ofSeconds(duration.toSeconds)
+    now.plus(durationinJava)
+  }
 
   private def secondsTillEndOfPomodoro(endAt: Instant): FiniteDuration = {
     val secondsToEnd = JavaDuration.between(Instant.now(), endAt).getSeconds.seconds
@@ -57,7 +68,7 @@ class Pomodoro(val persistenceId: String) extends PersistentActor {
   def updateState(evnt: PomodoroEvent): Unit = {
     (state, evnt) match {
       case (Stopped, Started(pomodoroDuration, endAt)) => state = InPomodoro(pomodoroDuration, endAt)
-      case (InPomodoro(_, _), Ended || Canceled) => state = Stopped
+      case (InPomodoro(_, _), Ended | Canceled) => state = Stopped
       case (Stopped, SettingsChanged(newDuration)) if newDuration != duration => duration = newDuration
     }
   }
@@ -65,17 +76,27 @@ class Pomodoro(val persistenceId: String) extends PersistentActor {
   override def receiveRecover: Receive = {
     case evnt: PomodoroEvent => updateState(evnt)
     case RecoveryCompleted => state match {
-      case Started(_, endAt) =>
+      case InPomodoro(_, endAt) =>
         launcher = context.system.scheduler.scheduleOnce(secondsTillEndOfPomodoro(endAt), self, End).some
+      case Stopped =>
     }
   }
 
+
   override def receiveCommand: Receive = {
     case Start => state match {
-      //case Started()
+      case _:Started =>
+      case Stopped => persist(Started(duration,instantToEnd(duration))){
+        sender() ! _
+      }
     }
-    case End =>
-    case Cancel =>
+    case End => persist(Ended)(ev => updateState(ev))
+    case Cancel => persist(Canceled)(ev => updateState(ev))
+    case SetTimer(newDuration) => state match {
+      case Stopped => persist(SettingsChanged(newDuration)){
+        e => sender() ! e
+      }
+    }
   }
 
 }
