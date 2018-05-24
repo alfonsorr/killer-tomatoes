@@ -7,29 +7,29 @@ import akka.persistence.{PersistentActor, RecoveryCompleted}
 import scala.concurrent.duration.Duration
 import java.time.{Duration => JavaDuration}
 
-import akka.actor.{Cancellable, Props}
+import akka.actor.{ActorRef, Cancellable, Props}
 
 trait PomodoroCmd
 
-object Start extends PomodoroCmd
+case object Start extends PomodoroCmd
 
 case class SetTimer(duration: Duration) extends PomodoroCmd
 
-object End extends PomodoroCmd
+case object End extends PomodoroCmd
 
-object Cancel extends PomodoroCmd
+case object Cancel extends PomodoroCmd
 
 trait PomodoroEvent
 
 case class Started(duration: Duration, endAt: Instant) extends PomodoroEvent
 
-object Ended extends PomodoroEvent
+case object Ended extends PomodoroEvent
 
-object Canceled extends PomodoroEvent
+case object Canceled extends PomodoroEvent
 
 case class SettingsChanged(duration: Duration) extends PomodoroEvent
 
-object CantStart extends PomodoroEvent
+case object CantStart extends PomodoroEvent
 
 trait State
 
@@ -38,10 +38,10 @@ case class InPomodoro(duration: Duration, endAt: Instant) extends State
 case object Stopped extends State
 
 object Pomodoro {
-  def props(id:String):Props = Props(new Pomodoro(id))
+  def props(id:String, notif:ActorRef):Props = Props(new Pomodoro(id, notif))
 }
 
-class Pomodoro(val persistenceId: String) extends PersistentActor {
+class Pomodoro(val persistenceId: String, notif:ActorRef) extends PersistentActor {
   import cats.syntax.option._
 
   import scala.concurrent.duration._
@@ -69,32 +69,46 @@ class Pomodoro(val persistenceId: String) extends PersistentActor {
     (state, evnt) match {
       case (Stopped, Started(pomodoroDuration, endAt)) => state = InPomodoro(pomodoroDuration, endAt)
       case (InPomodoro(_, _), Ended | Canceled) => state = Stopped
-      case (Stopped, SettingsChanged(newDuration)) if newDuration != duration => duration = newDuration
+      case (Stopped, SettingsChanged(newDuration)) => duration = newDuration
     }
   }
 
   override def receiveRecover: Receive = {
     case evnt: PomodoroEvent => updateState(evnt)
-    case RecoveryCompleted => state match {
-      case InPomodoro(_, endAt) =>
-        launcher = context.system.scheduler.scheduleOnce(secondsTillEndOfPomodoro(endAt), self, End).some
-      case Stopped =>
-    }
+    case RecoveryCompleted => startScheduler.orElse(doNothing)(state)
+  }
+
+  val startScheduler:PartialFunction[State,Unit] = {
+    case InPomodoro(_, endAt) =>
+      launcher = context.system.scheduler.scheduleOnce(secondsTillEndOfPomodoro(endAt), self, End).some
+  }
+  val doNothing:PartialFunction[State,Unit] = {
+    case Stopped =>
   }
 
 
   override def receiveCommand: Receive = {
     case Start => state match {
-      case _:Started =>
-      case Stopped => persist(Started(duration,instantToEnd(duration))){
-        sender() ! _
+      case _: Started =>
+      case Stopped => persist(Started(duration, instantToEnd(duration))) { event =>
+        updateState(event)
+        startScheduler(state)
+        sender() ! event
       }
     }
-    case End => persist(Ended)(ev => updateState(ev))
+    case End => state match {
+      case InPomodoro(_,endesAt)  => persist(Ended) (ev => {
+        updateState(ev)
+        notif ! Ended
+      })
+      case _:InPomodoro | Stopped => println("ended when cant be ended")
+    }
     case Cancel => persist(Canceled)(ev => updateState(ev))
     case SetTimer(newDuration) => state match {
       case Stopped => persist(SettingsChanged(newDuration)){
-        e => sender() ! e
+        e =>
+          updateState(e)
+          sender() ! e
       }
     }
   }
