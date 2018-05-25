@@ -59,6 +59,7 @@ class Pomodoro(val persistenceId: String, notif:ActorRef) extends PersistentActo
 
   private def secondsTillEndOfPomodoro(endAt: Instant): FiniteDuration = {
     val secondsToEnd = JavaDuration.between(Instant.now(), endAt).getSeconds.seconds
+    println(secondsToEnd)
     if (secondsToEnd <= 0.seconds)
       1.seconds
     else
@@ -97,7 +98,8 @@ class Pomodoro(val persistenceId: String, notif:ActorRef) extends PersistentActo
       }
     }
     case End => state match {
-      case InPomodoro(_,endesAt)  => persist(Ended) (ev => {
+      case InPomodoro(_,endsAt)  => persist(Ended) (ev => {
+        println("end in pomodoro")
         updateState(ev)
         notif ! Ended
       })

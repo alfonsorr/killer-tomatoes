@@ -3,7 +3,7 @@ package org.alfiler
 import java.time.Instant
 
 import akka.actor.ActorSystem
-import akka.testkit.{ImplicitSender, TestActorRef, TestActors, TestKit}
+import akka.testkit.{ImplicitSender, TestActorRef, TestActors, TestKit, TestProbe}
 import akka.util.Timeout
 import org.scalatest.{BeforeAndAfterAll, FlatSpecLike, Matchers}
 
@@ -39,16 +39,16 @@ class PomodoroTest extends TestKit(ActorSystem("ShoppingCartActorSpec"))
     val pomodoroID = "yepe-000002"
     implicit val t:Timeout = 1.second
 
-    val echo = system.actorOf(TestActors.echoActorProps)
-    val pomodoro = system.actorOf(Pomodoro.props(pomodoroID, echo))
+    val probe = TestProbe()
+    val pomodoro = system.actorOf(Pomodoro.props(pomodoroID, probe.ref))
 
 
     val DURATION = 20.seconds
     pomodoro ! SetTimer(DURATION)
 
     expectMsg(SettingsChanged(DURATION))
-    val started = Await.result((pomodoro ? Start).mapTo[Started], 2.seconds)
-    started.duration shouldBe DURATION
-    expectMsg(DURATION+30.seconds, Ended)
+    pomodoro ! Start
+    expectMsgPF(1.second){case Started(DURATION,endAt) => endAt}
+    probe.expectMsg(DURATION+1.seconds, Ended)
   }
 }
